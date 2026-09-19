@@ -1,7 +1,5 @@
 package com.fta.reconciler.lock;
 
-import com.fta.reconciler.tx.TransactionContext;
-
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -13,11 +11,12 @@ public class LockManager {
 
     /**
      * Acquires the lock guarding {@code accountId} on {@code shard}.
-     * The key is scoped to the active transaction so that nested calls inside one
-     * transaction reuse the same monitor instead of deadlocking on themselves.
+     * The key is scoped only to the shard and account so that concurrent
+     * transactions serialise on the same account. Nested calls from one thread
+     * still work because {@link ReentrantLock} is reentrant.
      */
     public LockHandle acquire(String shard, String accountId) {
-        String key = TransactionContext.currentTxId() + "|" + shard + "|" + accountId;
+        String key = shard + "|" + accountId;
         ReentrantLock lock = locks.computeIfAbsent(key, k -> new ReentrantLock());
         lock.lock();
         return new LockHandle(key, lock);

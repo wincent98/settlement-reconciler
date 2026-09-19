@@ -16,6 +16,7 @@ public class LedgerStore {
     private final AuditLog auditLog;
     private final ConcurrentMap<String, LedgerEntry> entriesByKey = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, List<LedgerEntry>> entriesByAccount = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Object> appendMonitors = new ConcurrentHashMap<>();
     private final AtomicLong sequence = new AtomicLong();
 
     public LedgerStore(String shard, AuditLog auditLog) {
@@ -27,17 +28,24 @@ public class LedgerStore {
         return shard;
     }
 
-    /** Appends one entry. The unique constraint on the idempotency key rejects replays. */
+    /**
+     * Appends one entry. The unique constraint on the idempotency key rejects replays.
+     * The sequence assignment and the audit write happen inside a per-account critical
+     * section so the audit trail of one account always follows the sequence order.
+     */
     public LedgerEntry append(String idempotencyKey, String accountId, long amountCents) {
-        long seq = sequence.incrementAndGet();
-        LedgerEntry entry = new LedgerEntry(idempotencyKey, accountId, amountCents, seq);
-        LedgerEntry existing = entriesByKey.putIfAbsent(idempotencyKey, entry);
-        if (existing != null) {
-            throw new DuplicateEntryException(idempotencyKey);
+        Object monitor = appendMonitors.computeIfAbsent(accountId, k -> new Object());
+        synchronized (monitor) {
+            long seq = sequence.incrementAndGet();
+            LedgerEntry entry = new LedgerEntry(idempotencyKey, accountId, amountCents, seq);
+            LedgerEntry existing = entriesByKey.putIfAbsent(idempotencyKey, entry);
+            if (existing != null) {
+                throw new DuplicateEntryException(idempotencyKey);
+            }
+            entriesByAccount.computeIfAbsent(accountId, k -> Collections.synchronizedList(new ArrayList<>())).add(entry);
+            auditLog.record(accountId, seq, idempotencyKey);
+            return entry;
         }
-        entriesByAccount.computeIfAbsent(accountId, k -> Collections.synchronizedList(new ArrayList<>())).add(entry);
-        auditLog.record(accountId, seq, idempotencyKey);
-        return entry;
     }
 
     public long balanceOf(String accountId) {
